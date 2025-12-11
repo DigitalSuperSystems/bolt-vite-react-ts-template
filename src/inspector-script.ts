@@ -10,6 +10,10 @@ let currentHighlight: HTMLElement | null = null
 let selectedElement: HTMLElement | null = null
 let inspectorStyle: HTMLStyleElement | null = null
 
+// Text editing state
+let editingElement: HTMLElement | null = null
+let originalText = ''
+
 // CSS for inspector highlights
 const INSPECTOR_CSS = `
   .inspector-active * {
@@ -26,6 +30,17 @@ const INSPECTOR_CSS = `
     outline: 2px solid #8b5cf6 !important;
     outline-offset: -2px;
     background-color: rgba(139, 92, 246, 0.15) !important;
+  }
+
+  .inspector-editing {
+    outline: 2px solid #10b981 !important;
+    outline-offset: 2px !important;
+    cursor: text !important;
+    background-color: rgba(16, 185, 129, 0.05) !important;
+  }
+
+  .inspector-editing:focus {
+    outline: 2px solid #10b981 !important;
   }
 `
 
@@ -282,6 +297,204 @@ function handleMouseLeave() {
 }
 
 /**
+ * Handle double-click - enable text editing
+ */
+function handleDoubleClick(e: MouseEvent) {
+  if (!isInspectorActive) return
+
+  e.preventDefault()
+  e.stopPropagation()
+
+  const target = e.target as HTMLElement
+  if (!target || target === document.body || target === document.documentElement) return
+
+  const elementInfo = createElementInfo(target)
+
+  // Enable text editing if element is editable
+  if (elementInfo.isTextEditable) {
+    enableTextEditing(target)
+  }
+}
+
+/**
+ * Enable text editing on an element
+ */
+function enableTextEditing(element: HTMLElement) {
+  // Store original text
+  originalText = element.textContent?.trim() || ''
+  element.dataset.originalText = originalText
+
+  // Make element editable
+  element.contentEditable = 'true'
+  element.classList.add('inspector-editing')
+  element.classList.remove('inspector-selected')
+  element.classList.remove('inspector-highlight')
+
+  // Focus and select all text
+  element.focus()
+
+  // Select all text after a brief delay
+  setTimeout(() => {
+    const range = document.createRange()
+    range.selectNodeContents(element)
+    const selection = window.getSelection()
+    if (selection) {
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+  }, 10)
+
+  // Store reference
+  editingElement = element
+
+  // Add event listeners
+  element.addEventListener('blur', handleTextEditBlur)
+  element.addEventListener('keydown', handleTextEditKeydown)
+}
+
+/**
+ * Handle blur - finalize text edit
+ */
+function handleTextEditBlur(event: FocusEvent) {
+  const element = event.target as HTMLElement
+  finalizeTextEdit(element)
+}
+
+/**
+ * Handle keydown during text editing
+ */
+function handleTextEditKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
+    ;(event.target as HTMLElement).blur() // Triggers handleTextEditBlur
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    // Restore original text
+    const element = event.target as HTMLElement
+    element.textContent = element.dataset.originalText || ''
+    element.blur()
+  }
+}
+
+/**
+ * Finalize text edit and send changes to parent
+ */
+function finalizeTextEdit(element: HTMLElement) {
+  const newText = element.textContent?.trim() || ''
+  const oldText = element.dataset.originalText || ''
+
+  // Remove editable state
+  element.contentEditable = 'false'
+  element.classList.remove('inspector-editing')
+  element.classList.add('inspector-selected')
+
+  // Remove event listeners
+  element.removeEventListener('blur', handleTextEditBlur)
+  element.removeEventListener('keydown', handleTextEditKeydown)
+
+  // Clear reference
+  editingElement = null
+
+  // If text changed, send message to parent
+  if (newText !== oldText && newText.length > 0) {
+    window.parent.postMessage({
+      type: 'TEXT_CHANGE',
+      sourceFile: element.getAttribute('data-source-file') || element.getAttribute('data-astro-source-file') || '',
+      sourceLoc: element.getAttribute('data-source-loc') || element.getAttribute('data-astro-source-loc') || '',
+      oldText: oldText,
+      newText: newText,
+      textType: element.getAttribute('data-text-type') || 'literal',
+      textSource: element.getAttribute('data-text-source') || '',
+      elementInfo: createElementInfo(element),
+    }, '*')
+  } else if (newText.length === 0) {
+    // Restore original text if empty
+    element.textContent = oldText
+  }
+
+  // Clean up dataset
+  delete element.dataset.originalText
+}
+
+/**
+ * Inject style-overrides.css if it exists
+ */
+function injectStyleOverrides() {
+  const existingLink = document.querySelector('link[href*="style-overrides.css"]')
+  if (existingLink) return
+
+  const possiblePaths = [
+    '/src/style-overrides.css',
+    '/style-overrides.css',
+    './src/style-overrides.css'
+  ]
+
+  possiblePaths.forEach(path => {
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = path
+    link.id = 'style-overrides-link'
+    link.onerror = () => link.remove()
+    document.head.appendChild(link)
+  })
+}
+
+/**
+ * Reload style-overrides.css with cache busting
+ */
+function reloadStyleOverrides() {
+  // Remove existing links
+  const existingLinks = document.querySelectorAll('link[href*="style-overrides.css"]')
+  existingLinks.forEach(link => link.remove())
+
+  const possiblePaths = [
+    '/src/style-overrides.css',
+    '/style-overrides.css',
+    './src/style-overrides.css'
+  ]
+
+  const timestamp = Date.now()
+  possiblePaths.forEach(path => {
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = `${path}?t=${timestamp}`
+    link.id = 'style-overrides-link'
+    link.onerror = () => link.remove()
+    document.head.appendChild(link)
+  })
+}
+
+/**
+ * Find element by its info (for applying styles)
+ */
+function findElementByInfo(elementInfo: any): HTMLElement | null {
+  // Try by ID first
+  if (elementInfo.id) {
+    const byId = document.getElementById(elementInfo.id)
+    if (byId && byId.tagName === elementInfo.tagName) {
+      return byId
+    }
+  }
+
+  // Try by matching attributes
+  const elements = document.querySelectorAll(elementInfo.tagName)
+  for (const elem of elements) {
+    const className = typeof elem.className === 'string' ? elem.className : ''
+    if (className === elementInfo.className) {
+      const rect = elem.getBoundingClientRect()
+      // Check if position matches (within 5px tolerance)
+      if (Math.abs(rect.x - elementInfo.rect.x) < 5 &&
+          Math.abs(rect.y - elementInfo.rect.y) < 5) {
+        return elem as HTMLElement
+      }
+    }
+  }
+
+  // Fallback: return current selected element
+  return selectedElement
+}
+
+/**
  * Activate inspector mode
  */
 function activateInspector() {
@@ -300,6 +513,7 @@ function activateInspector() {
   // Add event listeners
   document.addEventListener('mousemove', handleMouseMove, true)
   document.addEventListener('click', handleClick, true)
+  document.addEventListener('dblclick', handleDoubleClick, true)
   document.addEventListener('mouseleave', handleMouseLeave, true)
 }
 
@@ -314,6 +528,7 @@ function deactivateInspector() {
   // Remove event listeners
   document.removeEventListener('mousemove', handleMouseMove, true)
   document.removeEventListener('click', handleClick, true)
+  document.removeEventListener('dblclick', handleDoubleClick, true)
   document.removeEventListener('mouseleave', handleMouseLeave, true)
 
   // Remove active class
@@ -340,7 +555,7 @@ function deactivateInspector() {
  * Listen for messages from parent window
  */
 function handleMessage(event: MessageEvent) {
-  const { type, active } = event.data || {}
+  const { type, active, elementInfo, style } = event.data || {}
 
   if (type === 'INSPECTOR_ACTIVATE') {
     if (active) {
@@ -348,6 +563,16 @@ function handleMessage(event: MessageEvent) {
     } else {
       deactivateInspector()
     }
+  } else if (type === 'APPLY_STYLE') {
+    // Apply style change to element for live preview
+    const element = findElementByInfo(elementInfo)
+    if (element && style) {
+      const { property, value } = style
+      element.style.setProperty(property, value)
+    }
+  } else if (type === 'RELOAD_CSS_OVERRIDES') {
+    // Reload style-overrides.css after changes
+    reloadStyleOverrides()
   }
 }
 
@@ -357,6 +582,9 @@ function handleMessage(event: MessageEvent) {
 function init() {
   // Listen for activation messages from parent
   window.addEventListener('message', handleMessage)
+
+  // Inject style overrides if they exist
+  injectStyleOverrides()
 
   // Notify parent that we're ready
   window.parent.postMessage({
