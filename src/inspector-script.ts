@@ -21,15 +21,15 @@ const INSPECTOR_CSS = `
   }
 
   .inspector-highlight {
-    outline: 2px solid #3b82f6 !important;
+    outline: 2px solid #0ca8d2 !important;
     outline-offset: -2px;
-    background-color: rgba(59, 130, 246, 0.1) !important;
+    background-color: rgba(12, 168, 210, 0.08) !important;
   }
 
   .inspector-selected {
-    outline: 2px solid #8b5cf6 !important;
+    outline: 2px solid #0ca8d2 !important;
     outline-offset: -2px;
-    background-color: rgba(139, 92, 246, 0.15) !important;
+    background-color: rgba(12, 168, 210, 0.15) !important;
   }
 
   .inspector-editing {
@@ -142,15 +142,29 @@ function getRelevantStyles(element: Element): Record<string, string> {
   const computed = window.getComputedStyle(element)
   const styles: Record<string, string> = {}
 
+  // Comprehensive list of style properties for the style editor
   const relevantProps = [
-    'color', 'backgroundColor', 'fontSize', 'fontFamily', 'fontWeight',
-    'padding', 'margin', 'border', 'borderRadius', 'display', 'position'
+    // Layout
+    'display', 'position', 'width', 'height',
+    'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+    // Typography
+    'color', 'font-size', 'font-family', 'font-weight', 'text-align',
+    // Visual
+    'background', 'background-color', 'border', 'border-radius', 'opacity',
+    // Flexbox
+    'flex-direction', 'justify-content', 'align-items', 'flex-wrap', 'gap'
   ]
 
   for (const prop of relevantProps) {
-    const value = computed.getPropertyValue(prop.replace(/([A-Z])/g, '-$1').toLowerCase())
-    if (value && value !== 'none' && value !== 'normal' && value !== '0px') {
-      styles[prop] = value
+    const value = computed.getPropertyValue(prop)
+    // Include the value unless it's clearly a default/empty value
+    if (value && value !== 'none' && value !== 'normal' && value !== 'auto' &&
+        value !== '0px' && value !== 'rgba(0, 0, 0, 0)' && value !== 'transparent' &&
+        value !== 'start' && value !== 'stretch') {
+      // Convert kebab-case to camelCase for consistency with JS style names
+      const camelProp = prop.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())
+      styles[camelProp] = value
     }
   }
 
@@ -552,6 +566,25 @@ function deactivateInspector() {
 }
 
 /**
+ * Clear selection without deactivating inspector
+ */
+function clearSelection() {
+  // Remove selection highlight
+  if (selectedElement) {
+    selectedElement.classList.remove('inspector-selected')
+    selectedElement = null
+  }
+  // Also clear any editing state
+  if (editingElement) {
+    editingElement.contentEditable = 'false'
+    editingElement.classList.remove('inspector-editing')
+    editingElement.removeEventListener('blur', handleTextEditBlur)
+    editingElement.removeEventListener('keydown', handleTextEditKeydown)
+    editingElement = null
+  }
+}
+
+/**
  * Listen for messages from parent window
  */
 function handleMessage(event: MessageEvent) {
@@ -563,6 +596,9 @@ function handleMessage(event: MessageEvent) {
     } else {
       deactivateInspector()
     }
+  } else if (type === 'CLEAR_SELECTION') {
+    // Clear selection without deactivating inspector
+    clearSelection()
   } else if (type === 'APPLY_STYLE') {
     // Apply style change to element for live preview
     const element = findElementByInfo(elementInfo)
